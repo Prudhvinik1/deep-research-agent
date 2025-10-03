@@ -1,6 +1,8 @@
 from exa_py import Exa
 from cerebras.cloud.sdk import Cerebras
 import os
+import asyncio
+from typing import AsyncGenerator
 
 class ResearchAgent:
 
@@ -17,36 +19,55 @@ class ResearchAgent:
         )
         return result.results
     
-    def ask_ai(self,prompt):
-        """Get AI response from Cerebras"""
+    async def ask_ai(self, prompt):
+        """Get AI response from Cerebras with streaming"""
         try:
             chat_completion = self.cerebras.chat.completions.create(
-            messages=[
-                {
-                    "role": "user",
-                    "content": prompt,
-                }
-            ],
-            model="llama-4-scout-17b-16e-instruct",
-            max_tokens = 600,
-            temperature = 0.2
+                messages=[
+                    {
+                        "role": "user",
+                        "content": prompt,
+                    }
+                ],
+                model="llama-4-scout-17b-16e-instruct",
+                max_tokens=600,
+                temperature=0.2,
+                stream=True
             )
-            print(chat_completion.choices[0].message.content)
-            return chat_completion.choices[0].message.content
+            full_response = ""
+            for chunk in chat_completion:
+                content = chunk.choices[0].delta.content
+                if content:
+                    full_response += content
+                    print(content, end="")
+                    yield {"type": "ai_chunk", "content": content}
+            
+            yield {"type": "ai_complete", "full_response": full_response}
+            
+                
         except Exception as e:
+            error_msg = f"Error: Could not get AI response. {str(e)}"
             print(f"Error calling Cerebras API: {e}")
-            return f"Error: Could not get AI response. {str(e)}"
+            yield {"type": "ai_error", "error": error_msg}
+            
 
 
-    def research(self, query: str):
+    async def research(self, query: str):
         """ The Main Researching Function That Orchestrates the Entire Research Process"""
 
+        # Start research
+        yield {"type": "start", "query": query, "message": "Starting research..."}
+        await asyncio.sleep(0.1)
+
         #1. Web Search
+        yield {"type": "search_start", "message": "Searching the web..."}
+        await asyncio.sleep(0.1)
+        
         web_search_results = self.web_search(query, num_results=5)
         
         #2. Get Contents from Web Search Results
         sources = []
-        for result in web_search_results:
+        for i, result in enumerate(web_search_results):
             content = result.text
             title = result.title
 
@@ -55,13 +76,29 @@ class ResearchAgent:
                     "title": title,
                     "content": content
                 })
+                
+                yield {
+                    "type": "search_result", 
+                    "title": title,
+                    "url": result.url,
+                    "index": i + 1,
+                    "total": len(web_search_results)
+                }
+                await asyncio.sleep(0.1)
+        
+        yield {"type": "search_complete", "sources_found": len(sources)}
+        await asyncio.sleep(0.1)
         
         print(f"Found {len(sources)} relevant sources")
 
         if not sources:
-            return {"summary": "No relevant sources found", "insights": []}
+            yield {"type": "error", "message": "No relevant sources found"}
+            return
         
         #3. Context for AI Analysis
+        yield {"type": "analysis_start", "message": "Analyzing sources with AI..."}
+        await asyncio.sleep(0.1)
+        
         context = f"Research query: {query}\n\nSources:\n"
 
         for i, source in enumerate(sources, 1):
@@ -82,12 +119,39 @@ INSIGHTS:
 - [insight 2]
 - [insight 3]"""
 
-        summary_response = self.ask_ai(prompt)
+        yield {"type": "ai_thinking", "message": "AI is processing the information..."}
+        await asyncio.sleep(0.1)
+
+        # Stream AI response
+        summary_response = ""
+        async for ai_chunk in self.ask_ai(prompt):
+            if ai_chunk["type"] == "ai_chunk":
+                yield ai_chunk
+            elif ai_chunk["type"] == "ai_complete":
+                summary_response = ai_chunk["full_response"]
+                break
+            elif ai_chunk["type"] == "ai_error":
+                yield ai_chunk
+                return
+
+        yield {
+            "type": "analysis_complete", 
+            "summary": summary_response,
+            "sources_count": len(sources)
+        }
+        await asyncio.sleep(0.1)
 
         print("🔍 AI Analysis Complete")
 
-        return {"query": query, "summary": summary_response,"sources": len(sources)}
+        # Final result
+        yield {
+            "type": "complete",
+            "query": query,
+            "summary": summary_response,
+            "sources_count": len(sources),
+            "message": "Research completed successfully!"
+        }
         
-        
+    
     def deep_research(self, query: str):
         pass

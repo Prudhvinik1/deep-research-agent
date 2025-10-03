@@ -3,6 +3,8 @@ from src.datamodels import ResearchRequest, ResearchResponse
 from fastapi.responses import StreamingResponse
 from dotenv import load_dotenv
 from src.research_agent import ResearchAgent
+import asyncio
+import json
 
 load_dotenv('.env.local')
 
@@ -17,10 +19,14 @@ async def root():
 async def research(request: ResearchRequest):
     query = request.query
     agent = ResearchAgent()
-    response = agent.research(query)
+
+    async def stream_response():
+        async for response in agent.research(query):
+            yield f"data: {json.dumps(response)}\n\n"
    
-    return ResearchResponse(
-        result=response["summary"],
-        source="web"
+    return StreamingResponse(
+        stream_response(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
     )
 
